@@ -17,7 +17,7 @@ type parser struct{}
 func (p *parser) parseMapping(ctx *context) (ast.Node, error) {
 	mapTk := ctx.currentToken()
 	node := ast.Mapping(mapTk, true)
-	node.SetPath(ctx.path)
+	node.SetPath(ctx.path())
 	ctx.progress(1) // skip MappingStart token
 	for ctx.next() {
 		tk := ctx.currentToken()
@@ -45,7 +45,7 @@ func (p *parser) parseMapping(ctx *context) (ast.Node, error) {
 
 func (p *parser) parseSequence(ctx *context) (ast.Node, error) {
 	node := ast.Sequence(ctx.currentToken(), true)
-	node.SetPath(ctx.path)
+	node.SetPath(ctx.path())
 	ctx.progress(1) // skip SequenceStart token
 	for ctx.next() {
 		tk := ctx.currentToken()
@@ -58,6 +58,7 @@ func (p *parser) parseSequence(ctx *context) (ast.Node, error) {
 		}
 
 		value, err := p.parseToken(ctx.withIndex(uint(len(node.Values))), tk)
+		ctx.popPath()
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to parse sequence value in flow sequence node")
 		}
@@ -70,7 +71,7 @@ func (p *parser) parseSequence(ctx *context) (ast.Node, error) {
 func (p *parser) parseTag(ctx *context) (ast.Node, error) {
 	tagToken := ctx.currentToken()
 	node := ast.Tag(tagToken)
-	node.SetPath(ctx.path)
+	node.SetPath(ctx.path())
 	ctx.progress(1) // skip tag token
 	var (
 		value ast.Node
@@ -144,7 +145,7 @@ func (p *parser) parseMapValue(ctx *context, key ast.Node, colonToken *token.Tok
 		return nil, errors.Wrapf(err, "failed to create map value node")
 	}
 	if node != nil && node.GetPath() == "" {
-		node.SetPath(ctx.path)
+		node.SetPath(ctx.path())
 	}
 	return node, nil
 }
@@ -206,7 +207,7 @@ func (p *parser) parseMappingValue(ctx *context) (ast.Node, error) {
 		return nil, errors.Wrapf(err, "failed to parse map key")
 	}
 	keyText := key.GetToken().Value
-	key.SetPath(ctx.withChild(keyText).path)
+	key.SetPath(ctx.childPath(keyText))
 	if err := p.validateMapKey(key.GetToken()); err != nil {
 		return nil, errors.Wrapf(err, "validate mapping key error")
 	}
@@ -216,7 +217,9 @@ func (p *parser) parseMappingValue(ctx *context) (ast.Node, error) {
 		return nil, errors.ErrSyntax("unexpected map", key.GetToken())
 	}
 	ctx.progress(1) // progress to value token
-	if err := p.setSameLineCommentIfExists(ctx.withChild(keyText), key); err != nil {
+	err = p.setSameLineCommentIfExists(ctx.withChild(keyText), key)
+	ctx.popPath()
+	if err != nil {
 		return nil, errors.Wrapf(err, "failed to set same line comment to node")
 	}
 	if key.GetComment() != nil {
@@ -226,6 +229,7 @@ func (p *parser) parseMappingValue(ctx *context) (ast.Node, error) {
 	}
 
 	value, err := p.parseMapValue(ctx.withChild(keyText), key, tk)
+	ctx.popPath()
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to parse map value")
 	}
@@ -234,9 +238,9 @@ func (p *parser) parseMappingValue(ctx *context) (ast.Node, error) {
 	}
 
 	mvnode := ast.MappingValue(tk, key, value)
-	mvnode.SetPath(ctx.withChild(keyText).path)
+	mvnode.SetPath(ctx.childPath(keyText))
 	node := ast.Mapping(tk, false, mvnode)
-	node.SetPath(ctx.withChild(keyText).path)
+	node.SetPath(ctx.childPath(keyText))
 
 	ntk := ctx.nextNotCommentToken()
 	antk := ctx.afterNextNotCommentToken()
@@ -276,7 +280,7 @@ func (p *parser) parseMappingValue(ctx *context) (ast.Node, error) {
 func (p *parser) parseSequenceEntry(ctx *context) (ast.Node, error) {
 	tk := ctx.currentToken()
 	sequenceNode := ast.Sequence(tk, false)
-	sequenceNode.SetPath(ctx.path)
+	sequenceNode.SetPath(ctx.path())
 	curColumn := tk.Position.Column
 	for tk.Type == token.SequenceEntryType {
 		ctx.progress(1) // skip sequence token
@@ -294,11 +298,12 @@ func (p *parser) parseSequenceEntry(ctx *context) (ast.Node, error) {
 			ctx.progress(1) // skip sequence token
 		}
 		value, err := p.parseToken(ctx.withIndex(uint(len(sequenceNode.Values))), ctx.currentToken())
+		ctx.popPath()
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to parse sequence")
 		}
 		if comment != nil {
-			comment.SetPath(ctx.withIndex(uint(len(sequenceNode.Values))).path)
+			comment.SetPath(ctx.indexPath(uint(len(sequenceNode.Values))))
 			sequenceNode.ValueComments = append(sequenceNode.ValueComments, comment)
 		} else {
 			sequenceNode.ValueComments = append(sequenceNode.ValueComments, nil)
@@ -322,7 +327,7 @@ func (p *parser) parseSequenceEntry(ctx *context) (ast.Node, error) {
 func (p *parser) parseAnchor(ctx *context) (ast.Node, error) {
 	tk := ctx.currentToken()
 	anchor := ast.Anchor(tk)
-	anchor.SetPath(ctx.path)
+	anchor.SetPath(ctx.path())
 	ntk := ctx.nextToken()
 	if ntk == nil {
 		return nil, errors.ErrSyntax("unexpected anchor. anchor name is undefined", tk)
@@ -349,7 +354,7 @@ func (p *parser) parseAnchor(ctx *context) (ast.Node, error) {
 func (p *parser) parseAlias(ctx *context) (ast.Node, error) {
 	tk := ctx.currentToken()
 	alias := ast.Alias(tk)
-	alias.SetPath(ctx.path)
+	alias.SetPath(ctx.path())
 	ntk := ctx.nextToken()
 	if ntk == nil {
 		return nil, errors.ErrSyntax("unexpected alias. alias name is undefined", tk)
@@ -392,7 +397,7 @@ func (p *parser) parseScalarValueWithComment(ctx *context, tk *token.Token) (ast
 	if node == nil {
 		return nil, nil
 	}
-	node.SetPath(ctx.path)
+	node.SetPath(ctx.path())
 	if p.isSameLineComment(ctx.nextToken(), node) {
 		ctx.progress(1)
 		if err := p.setSameLineCommentIfExists(ctx, node); err != nil {
@@ -455,7 +460,7 @@ func (p *parser) parseLiteral(ctx *context) (ast.Node, error) {
 	var comment *ast.CommentGroupNode
 	if tk.Type == token.CommentType {
 		comment = p.parseCommentOnly(ctx)
-		comment.SetPath(ctx.path)
+		comment.SetPath(ctx.path())
 		if err := node.SetComment(comment); err != nil {
 			return nil, errors.Wrapf(err, "failed to set comment to literal")
 		}
@@ -489,7 +494,7 @@ func (p *parser) setSameLineCommentIfExists(ctx *context, node ast.Node) error {
 		return nil
 	}
 	comment := ast.CommentGroup([]*token.Token{tk})
-	comment.SetPath(ctx.path)
+	comment.SetPath(ctx.path())
 	if err := node.SetComment(comment); err != nil {
 		return errors.Wrapf(err, "failed to set comment token to ast.Node")
 	}
@@ -546,9 +551,10 @@ func (p *parser) parseComment(ctx *context) (ast.Node, error) {
 func (p *parser) parseMappingKey(ctx *context) (ast.Node, error) {
 	keyTk := ctx.currentToken()
 	node := ast.MappingKey(keyTk)
-	node.SetPath(ctx.path)
+	node.SetPath(ctx.path())
 	ctx.progress(1) // skip mapping key token
 	value, err := p.parseToken(ctx.withChild(keyTk.Value), ctx.currentToken())
+	ctx.popPath()
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to parse map key")
 	}
@@ -562,7 +568,7 @@ func (p *parser) parseToken(ctx *context, tk *token.Token) (ast.Node, error) {
 		return nil, errors.Wrapf(err, "failed to create node from token")
 	}
 	if node != nil && node.GetPath() == "" {
-		node.SetPath(ctx.path)
+		node.SetPath(ctx.path())
 	}
 	return node, nil
 }

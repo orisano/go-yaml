@@ -1,7 +1,7 @@
 package parser
 
 import (
-	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/goccy/go-yaml/token"
@@ -9,55 +9,61 @@ import (
 
 // context context at parsing
 type context struct {
-	parent *context
 	idx    int
 	size   int
 	tokens token.Tokens
 	mode   Mode
-	path   string
+
+	paths     []string
+	isDirty   bool
+	pathCache string
 }
 
-var pathSpecialChars = []string{
-	"$", "*", ".", "[", "]",
-}
+var pathSpecialChars = "$*.[]"
 
 func containsPathSpecialChar(path string) bool {
-	for _, char := range pathSpecialChars {
-		if strings.Contains(path, char) {
-			return true
-		}
-	}
-	return false
+	return strings.ContainsAny(path, pathSpecialChars)
 }
 
 func normalizePath(path string) string {
 	if containsPathSpecialChar(path) {
-		return fmt.Sprintf("'%s'", path)
+		return "'" + path + "'"
 	}
 	return path
 }
 
+func (c *context) path() string {
+	if c.isDirty {
+		c.pathCache = strings.Join(c.paths, "")
+		c.isDirty = false
+	}
+	return c.pathCache
+}
+
+func (c *context) childPath(path string) string {
+	return c.path() + "." + normalizePath(path)
+}
+
 func (c *context) withChild(path string) *context {
-	ctx := c.copy()
-	path = normalizePath(path)
-	ctx.path += fmt.Sprintf(".%s", path)
-	return ctx
+	c.paths = append(c.paths, "."+normalizePath(path))
+	c.isDirty = true
+	return c
 }
 
 func (c *context) withIndex(idx uint) *context {
-	ctx := c.copy()
-	ctx.path += fmt.Sprintf("[%d]", idx)
-	return ctx
+	c.paths = append(c.paths, "["+strconv.FormatUint(uint64(idx), 10)+"]")
+	c.isDirty = true
+	return c
 }
 
-func (c *context) copy() *context {
-	return &context{
-		parent: c,
-		idx:    c.idx,
-		size:   c.size,
-		tokens: append(token.Tokens{}, c.tokens...),
-		mode:   c.mode,
-		path:   c.path,
+func (c *context) indexPath(idx uint) string {
+	return c.path() + "[" + strconv.FormatUint(uint64(idx), 10) + "]"
+}
+
+func (c *context) popPath() {
+	if len(c.paths) > 0 {
+		c.paths = c.paths[:len(c.paths)-1]
+		c.isDirty = true
 	}
 }
 
@@ -73,9 +79,6 @@ func (c *context) previousToken() *token.Token {
 }
 
 func (c *context) insertToken(idx int, tk *token.Token) {
-	if c.parent != nil {
-		c.parent.insertToken(idx, tk)
-	}
 	if c.size < idx {
 		return
 	}
@@ -158,9 +161,6 @@ func (c *context) isCurrentCommentToken() bool {
 }
 
 func (c *context) progressIgnoreComment(num int) {
-	if c.parent != nil {
-		c.parent.progressIgnoreComment(num)
-	}
 	if c.size <= c.idx+num {
 		c.idx = c.size
 	} else {
@@ -190,10 +190,11 @@ func newContext(tokens token.Tokens, mode Mode) *context {
 		}
 	}
 	return &context{
-		idx:    0,
-		size:   len(filteredTokens),
-		tokens: token.Tokens(filteredTokens),
-		mode:   mode,
-		path:   "$",
+		idx:     0,
+		size:    len(filteredTokens),
+		tokens:  filteredTokens,
+		mode:    mode,
+		paths:   []string{"$"},
+		isDirty: true,
 	}
 }
